@@ -23,6 +23,12 @@ static ngx_int_t ngx_http_set_header_helper(ngx_http_request_t *r,
     ngx_table_elt_t **output_header, unsigned no_create);
 static ngx_int_t ngx_http_set_builtin_header(ngx_http_request_t *r,
     ngx_http_lua_header_val_t *hv, ngx_str_t *value);
+static ngx_int_t ngx_http_set_connection(ngx_http_request_t *r,
+    ngx_http_lua_header_val_t *hv, ngx_str_t *value);
+static ngx_int_t ngx_http_set_user_agent(ngx_http_request_t *r,
+    ngx_http_lua_header_val_t *hv, ngx_str_t *value);
+static ngx_int_t ngx_http_set_cookie(ngx_http_request_t *r,
+    ngx_http_lua_header_val_t *hv, ngx_str_t *value);
 static ngx_int_t ngx_http_set_content_length_header(ngx_http_request_t *r,
     ngx_http_lua_header_val_t *hv, ngx_str_t *value);
 static ngx_int_t ngx_http_clear_builtin_header(ngx_http_request_t *r,
@@ -49,7 +55,7 @@ static ngx_http_lua_set_header_t  ngx_http_lua_set_handlers[] = {
 
     { ngx_string("Connection"),
                  offsetof(ngx_http_headers_in_t, connection),
-                 ngx_http_set_builtin_header },
+                 ngx_http_set_connection },
 
     { ngx_string("If-Modified-Since"),
                  offsetof(ngx_http_headers_in_t, if_modified_since),
@@ -57,7 +63,7 @@ static ngx_http_lua_set_header_t  ngx_http_lua_set_handlers[] = {
 
     { ngx_string("User-Agent"),
                  offsetof(ngx_http_headers_in_t, user_agent),
-                 ngx_http_set_builtin_header },
+                 ngx_http_set_user_agent },
 
     { ngx_string("Referer"),
                  offsetof(ngx_http_headers_in_t, referer),
@@ -94,6 +100,16 @@ static ngx_http_lua_set_header_t  ngx_http_lua_set_handlers[] = {
     { ngx_string("Content-Length"),
                  offsetof(ngx_http_headers_in_t, content_length),
                  ngx_http_set_content_length_header },
+
+#if (NGX_HTTP_REALIP)
+    { ngx_string("X-Real-IP"),
+                 offsetof(ngx_http_headers_in_t, x_real_ip),
+                 ngx_http_set_builtin_header },
+#endif
+
+    { ngx_string("Cookie"),
+                 offsetof(ngx_http_headers_in_t, cookies),
+                 ngx_http_set_cookie },
 
     { ngx_null_string, 0, ngx_http_set_header }
 };
@@ -253,6 +269,162 @@ ngx_http_set_builtin_header(ngx_http_request_t *r,
     return NGX_OK;
 }
 
+static ngx_int_t
+ngx_http_set_connection(ngx_http_request_t *r,
+    ngx_http_lua_header_val_t *hv, ngx_str_t *value)
+{
+    if (ngx_strcasestrn(value->data, "close", 5 - 1)) {
+        r->headers_in.connection_type = NGX_HTTP_CONNECTION_CLOSE;
+
+    } else if (ngx_strcasestrn(value->data, "keep-alive", 10 - 1)) {
+        r->headers_in.connection_type = NGX_HTTP_CONNECTION_KEEP_ALIVE;
+    }
+
+    return ngx_http_set_builtin_header(r, hv, value);
+}
+
+/* inspired from ngx_http_request.c:ngx_http_process_user_agent() */
+static ngx_int_t
+ngx_http_set_user_agent(ngx_http_request_t *r,
+    ngx_http_lua_header_val_t *hv, ngx_str_t *value)
+{
+    u_char  *user_agent, *msie;
+
+    /* clear previous settings */
+    r->headers_in.msie = 0;
+    r->headers_in.msie6 = 0;
+    r->headers_in.opera = 0;
+    r->headers_in.gecko = 0;
+    r->headers_in.safari = 0;
+    r->headers_in.konqueror = 0;
+
+    /* check some widespread browsers while the header is in CPU cache */
+
+    user_agent = value->data;
+
+    msie = ngx_strstrn(user_agent, "MSIE ", 5 - 1);
+
+    if (msie && msie + 7 < user_agent + value->len) {
+
+        r->headers_in.msie = 1;
+
+        if (msie[6] == '.') {
+
+            switch (msie[5]) {
+            case '4':
+            case '5':
+                r->headers_in.msie6 = 1;
+                break;
+            case '6':
+                if (ngx_strstrn(msie + 8, "SV1", 3 - 1) == NULL) {
+                    r->headers_in.msie6 = 1;
+                }
+                break;
+            }
+        }
+
+#if 0
+        /* MSIE ignores the SSL "close notify" alert */
+        if (c->ssl) {
+            c->ssl->no_send_shutdown = 1;
+        }
+#endif
+    }
+
+    if (ngx_strstrn(user_agent, "Opera", 5 - 1)) {
+        r->headers_in.opera = 1;
+        r->headers_in.msie = 0;
+        r->headers_in.msie6 = 0;
+    }
+
+    if (!r->headers_in.msie && !r->headers_in.opera) {
+
+        if (ngx_strstrn(user_agent, "Gecko/", 6 - 1)) {
+            r->headers_in.gecko = 1;
+
+        } else if (ngx_strstrn(user_agent, "Chrome/", 7 - 1)) {
+            r->headers_in.chrome = 1;
+
+        } else if (ngx_strstrn(user_agent, "Safari/", 7 - 1)
+                   && ngx_strstrn(user_agent, "Mac OS X", 8 - 1))
+        {
+            r->headers_in.safari = 1;
+
+        } else if (ngx_strstrn(user_agent, "Konqueror", 9 - 1)) {
+            r->headers_in.konqueror = 1;
+        }
+    }
+
+    return ngx_http_set_builtin_header(r, hv, value);
+}
+
+static ngx_int_t
+ngx_http_set_cookie(ngx_http_request_t *r, ngx_http_lua_header_val_t *hv,
+    ngx_str_t *value)
+{
+    ngx_str_t          cookie_name;
+    ngx_table_elt_t   *cookie, **cookies, **new_cookie;
+    u_char            *p;
+    ngx_uint_t         i;
+
+    if (hv->no_override) {
+        goto new_cookie;
+    }
+
+    /* extract name of the cookie */
+    p = ngx_strstrn(value->data, "=", 0);
+    if (p != 0) {
+
+        cookie_name.data = value->data;
+        cookie_name.len = p - value->data;
+
+        cookies = r->headers_in.cookies.elts;
+
+        for (i = 0; i < r->headers_in.cookies.nelts; i++) {
+
+            if (ngx_strncasecmp(cookies[i]->value.data,
+                                cookie_name.data, cookie_name.len)
+                == 0) {
+
+                /* cookie found, replace value. */
+                cookies[i]->value = *value;
+
+                return NGX_OK;
+            }
+        }
+    }
+
+    /* not found, insert new cookie. */
+
+new_cookie:
+
+    cookie = ngx_palloc(r->pool, sizeof (ngx_table_elt_t));
+    if (cookie == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    cookie->key = hv->key;
+    cookie->hash = hv->hash;
+    cookie->value = *value;
+
+#if 1
+    cookie->lowcase_key = ngx_pnalloc(r->pool, cookie->key.len);
+    if (cookie->lowcase_key == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ngx_strlow(cookie->lowcase_key, cookie->key.data, cookie->key.len);
+#endif
+
+    new_cookie = ngx_array_push(&r->headers_in.cookies);
+    if (new_cookie == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    *new_cookie = cookie;
+
+    return NGX_OK;
+}
 
 static ngx_int_t
 ngx_http_set_host_header(ngx_http_request_t *r, ngx_http_lua_header_val_t *hv,
