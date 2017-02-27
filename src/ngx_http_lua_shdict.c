@@ -1265,11 +1265,12 @@ ngx_http_lua_shdict_incr(lua_State *L)
                           * valid entries */
     int                          forcible = 0;
     ngx_queue_t                 *queue, *q;
+    lua_Number                   exptime = 0;
 
     n = lua_gettop(L);
 
-    if (n != 3 && n != 4) {
-        return luaL_error(L, "expecting 3 or 4 arguments, but only seen %d", n);
+    if (n < 2) {
+        return luaL_error(L, "expecting 2, 3, 4 or 5 arguments, but only seen %d", n);
     }
 
     if (lua_type(L, 1) != LUA_TTABLE) {
@@ -1305,10 +1306,20 @@ ngx_http_lua_shdict_incr(lua_State *L)
 
     hash = ngx_crc32_short(key.data, key.len);
 
-    value = luaL_checknumber(L, 3);
+    value = 1;
+    if (n >= 3) {
+        value = luaL_checknumber(L, 3);
+    }
 
-    if (n == 4) {
+    if (n >= 4) {
         init = luaL_checknumber(L, 4);
+    }
+
+    if (n >= 5) {
+        exptime = luaL_checknumber(L, 5);
+        if (exptime < 0) {
+            exptime = 0;
+        }
     }
 
     dd("looking up key %.*s in shared dict %.*s", (int) key.len, key.data,
@@ -1326,7 +1337,7 @@ ngx_http_lua_shdict_incr(lua_State *L)
 
     if (rc == NGX_DECLINED || rc == NGX_DONE) {
 
-        if (n == 3) {
+        if (n < 4) {
             ngx_shmtx_unlock(&ctx->shpool->mutex);
 
             lua_pushnil(L);
@@ -1478,7 +1489,13 @@ setvalue:
 
     sd->user_flags = 0;
 
-    sd->expires = 0;
+    if (exptime > 0) {
+        tp = ngx_timeofday();
+        sd->expires = (uint64_t) tp->sec * 1000 + tp->msec +
+            (uint64_t) (exptime * 1000);
+    } else {
+        sd->expires = 0;
+    }
 
     dd("setting value type to %d", LUA_TNUMBER);
 
