@@ -1253,6 +1253,7 @@ ngx_http_lua_shdict_incr(lua_State *L)
     ngx_str_t                    key;
     uint32_t                     hash;
     ngx_int_t                    rc;
+    ngx_time_t                  *tp;
     ngx_http_lua_shdict_ctx_t   *ctx;
     ngx_http_lua_shdict_node_t  *sd;
     double                       num;

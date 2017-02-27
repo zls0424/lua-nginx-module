@@ -174,6 +174,9 @@ ngx_http_lua_ssl_sess_store_handler(ngx_ssl_conn_t *ssl_conn,
 {
     lua_State                       *L;
     ngx_int_t                        rc;
+#if OPENSSL_VERSION_NUMBER >= 0x1010005fL
+    unsigned int                     len;
+#endif
     ngx_connection_t                *c, *fc = NULL;
     ngx_http_request_t              *r = NULL;
     ngx_http_connection_t           *hc;
@@ -249,8 +252,13 @@ ngx_http_lua_ssl_sess_store_handler(ngx_ssl_conn_t *ssl_conn,
     cctx->connection = c;
     cctx->request = r;
     cctx->session = sess;
+#if OPENSSL_VERSION_NUMBER < 0x1010005fL
     cctx->session_id.data = sess->session_id;
     cctx->session_id.len = sess->session_id_length;
+#else
+    cctx->session_id.data = (u_char *)SSL_SESSION_get_id(sess, &len);
+    cctx->session_id.len = len;
+#endif
     cctx->done = 0;
 
     dd("setting cctx");
